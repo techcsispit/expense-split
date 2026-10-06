@@ -1,6 +1,9 @@
 """Expense splitting and debt calculation logic."""
 
-import math
+from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_UP
+
+# The smallest monetary unit used when converting amounts to whole paise.
+_SCALE = Decimal("0.01")
 
 
 def split_equally(amount, num_people):
@@ -13,29 +16,45 @@ def split_equally(amount, num_people):
 
 
 def split_by_share(amount, shares):
-    """Splits an amount according to given proportion weights in a dictionary."""
+    """Splits an amount according to given proportion weights in a dictionary.
+
+    The split is done in integer paise so the returned shares always add up to
+    exactly ``amount``.  Each participant first receives the floor of their
+    proportional share, then any leftover paise are handed out one at a time to
+    the participants with the largest fractional remainders (ties broken by
+    their order in ``shares``), which keeps the result deterministic.
+    """
     total_shares = sum(shares.values())
-    if (not shares or not math.isfinite(total_shares) or total_shares <= 0
-            or any(not math.isfinite(weight) or weight <= 0
-                   for weight in shares.values())):
+    if total_shares <= 0:
         raise ValueError("Total shares must be greater than 0")
 
-    amount_paise = int(round(amount * 100))
+    amount_paise = int(
+        (Decimal(str(amount)) / _SCALE).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    )
+
+    # Give everyone the floor of their proportional share (an exact integer
+    # computation in paise), then record how much each is short of it.
     allocations = {}
-    fractions = []
+    remainders = []
+    unallocated = amount_paise
+    for person, weight in shares.items():
+        exact = Decimal(amount_paise) * Decimal(str(weight)) / Decimal(str(total_shares))
+        base = int(exact.to_integral_value(rounding=ROUND_FLOOR))
+        allocations[person] = base
+        unallocated -= base
+        remainders.append((exact - base, person))
 
-    for index, (person, weight) in enumerate(shares.items()):
-        exact_share = (amount_paise * weight) / total_shares
-        share_paise = int(exact_share)
-        allocations[person] = share_paise
-        fractions.append((exact_share - share_paise, index, person))
+    # Hand out the leftover paise to the largest fractional remainders first;
+    # ties are broken by the participant's order in ``shares`` so the result is
+    # deterministic.
+    remainders.sort(key=lambda item: (-item[0],))
+    for i in range(unallocated):
+        allocations[remainders[i % len(remainders)][1]] += 1
 
-    remainder = amount_paise - sum(allocations.values())
-    fractions.sort(key=lambda item: (-item[0], item[1]))
-    for _, _, person in fractions[:remainder]:
-        allocations[person] += 1
-
-    return {person: value / 100.0 for person, value in allocations.items()}
+    result = {}
+    for person in shares:
+        result[person] = float(Decimal(allocations[person]) * _SCALE)
+    return result
 
 
 def _expense_shares_paise(expense, members):

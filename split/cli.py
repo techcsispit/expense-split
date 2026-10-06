@@ -103,7 +103,7 @@ def cmd_settle(args):
     receiver = args.receiver.lower()
     debts = who_owes(group)
 
-    owed_record = next((d for d in debts if d["from"] == receiver and d["to"] == payer), None)
+    owed_record = next((d for d in debts if d["from"] == payer and d["to"] == receiver), None)
 
     if not owed_record:
         print(f"No pending debt found between {args.payer} and {args.receiver}.")
