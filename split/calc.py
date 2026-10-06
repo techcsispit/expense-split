@@ -1,5 +1,7 @@
 """Expense splitting and debt calculation logic."""
 
+import math
+
 
 def split_equally(amount, num_people):
     """Splits a total amount equally among a given number of people."""
@@ -13,13 +15,47 @@ def split_equally(amount, num_people):
 def split_by_share(amount, shares):
     """Splits an amount according to given proportion weights in a dictionary."""
     total_shares = sum(shares.values())
-    if total_shares <= 0:
+    if (not shares or not math.isfinite(total_shares) or total_shares <= 0
+            or any(not math.isfinite(weight) or weight <= 0
+                   for weight in shares.values())):
         raise ValueError("Total shares must be greater than 0")
 
-    result = {}
-    for person, weight in shares.items():
-        result[person] = round((amount * weight) / total_shares, 2)
-    return result
+    amount_paise = int(round(amount * 100))
+    allocations = {}
+    fractions = []
+
+    for index, (person, weight) in enumerate(shares.items()):
+        exact_share = (amount_paise * weight) / total_shares
+        share_paise = int(exact_share)
+        allocations[person] = share_paise
+        fractions.append((exact_share - share_paise, index, person))
+
+    remainder = amount_paise - sum(allocations.values())
+    fractions.sort(key=lambda item: (-item[0], item[1]))
+    for _, _, person in fractions[:remainder]:
+        allocations[person] += 1
+
+    return {person: value / 100.0 for person, value in allocations.items()}
+
+
+def _expense_shares_paise(expense, members):
+    """Returns each member's share of an expense in paise."""
+    amount = expense.get("amount", 0.0)
+    amount_paise = int(round(amount * 100))
+
+    if expense.get("split") == "share":
+        shares = split_by_share(amount, expense.get("shares", {}))
+        return {
+            member: int(round(shares.get(member, 0.0) * 100))
+            for member in members
+        }
+
+    base_share = amount_paise // len(members)
+    remainder = amount_paise % len(members)
+    return {
+        member: base_share + (1 if index < remainder else 0)
+        for index, member in enumerate(members)
+    }
 
 
 def get_net_balances(group_data):
@@ -34,16 +70,11 @@ def get_net_balances(group_data):
     
     for exp in group_data.get("expenses", []):
         paid_by = exp.get("paid_by")
-        amount = exp.get("amount", 0.0)
-        amount_paise = int(round(amount * 100))
+        amount_paise = int(round(exp.get("amount", 0.0) * 100))
         
         balances[paid_by] += amount_paise
-        
-        base_share = amount_paise // len(members)
-        remainder = amount_paise % len(members)
-        
-        for i, m in enumerate(members):
-            share = base_share + (1 if i < remainder else 0)
+
+        for m, share in _expense_shares_paise(exp, members).items():
             balances[m] -= share
             
     for st in group_data.get("settlements", []):
@@ -66,16 +97,9 @@ def who_owes(group_data):
     
     for exp in group_data.get("expenses", []):
         paid_by = exp.get("paid_by")
-        amount = exp.get("amount", 0.0)
-        amount_paise = int(round(amount * 100))
-        
-        base_share = amount_paise // len(members)
-        remainder = amount_paise % len(members)
-        
-        for i, m in enumerate(members):
+        for m, share in _expense_shares_paise(exp, members).items():
             if m == paid_by:
                 continue
-            share = base_share + (1 if i < remainder else 0)
             owes[m][paid_by] += share
 
     for st in group_data.get("settlements", []):

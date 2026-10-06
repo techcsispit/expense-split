@@ -1,6 +1,7 @@
 """Command Line Interface for Expense Split."""
 
 import argparse
+import math
 import sys
 from split.calc import split_equally, who_owes, settle_plan
 from split.io import load_group, save_group, load_all_groups
@@ -39,6 +40,42 @@ def cmd_add_expense(args):
 
     amount = float(args.amount)
 
+    shares = None
+    if args.split == "share":
+        if not args.share_weights:
+            print("Error: Share split requires at least one name=weight value.")
+            return
+
+        shares = {}
+        members = group.get("members", [])
+        for value in args.share_weights:
+            if value.count("=") != 1:
+                print(f"Error: Invalid share '{value}'. Use name=weight.")
+                return
+
+            name, raw_weight = value.split("=", 1)
+            name = name.lower()
+            try:
+                weight = float(raw_weight)
+            except ValueError:
+                print(f"Error: Invalid weight '{raw_weight}' for {name}.")
+                return
+
+            if not name or name not in members:
+                print(f"Error: '{name}' is not a member of the group.")
+                return
+            if name in shares:
+                print(f"Error: Duplicate share for '{name}'.")
+                return
+            if not math.isfinite(weight) or weight <= 0:
+                print(f"Error: Weight for '{name}' must be more than 0.")
+                return
+
+            shares[name] = weight
+    elif args.share_weights:
+        print("Error: Share weights can only be used with the 'share' split.")
+        return
+
     expenses = group.get("expenses", [])
     next_id = len(expenses) + 1
     new_expense = {
@@ -48,6 +85,8 @@ def cmd_add_expense(args):
         "paid_by": args.paid_by.lower(),
         "split": args.split.lower()
     }
+    if shares is not None:
+        new_expense["shares"] = shares
     expenses.append(new_expense)
     group["expenses"] = expenses
     save_group(args.group, group)
@@ -113,6 +152,7 @@ def main():
     p_add.add_argument("amount", type=float, help="Amount paid")
     p_add.add_argument("paid_by", help="Member who paid")
     p_add.add_argument("split", choices=["equal", "share"], default="equal", nargs="?", help="Split type")
+    p_add.add_argument("share_weights", nargs="*", help="Share weights as name=weight")
     p_add.set_defaults(func=cmd_add_expense)
 
     # settle
