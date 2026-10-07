@@ -8,7 +8,7 @@ from contextlib import redirect_stdout
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from split.calc import split_equally, split_by_share, who_owes, get_net_balances
+from split.calc import split_equally, split_by_share, who_owes, get_net_balances, settle_plan
 from split.cli import cmd_settle, main
 
 
@@ -100,6 +100,22 @@ class TestSplitCalculations(unittest.TestCase):
         balances = get_net_balances(group_data)
         self.assertEqual(sum(balances.values()), 0)
 
+    def test_no_self_debt(self):
+        """Ensure a person cannot owe themselves money."""
+        group_data = {
+            "members": ["alice", "bob"],
+            "expenses": [{"paid_by": "alice", "amount": 100.0, "split": "equal"}]
+        }
+
+        # Test who_owes function
+        debts = who_owes(group_data)
+        for debt in debts:
+            self.assertNotEqual(debt["from"], debt["to"], "Bug found: Self-debt detected in who_owes!")
+
+        # Test settle_plan function
+        payments = settle_plan(group_data)
+        for payment in payments:
+            self.assertNotEqual(payment["from"], payment["to"], "Bug found: Self-debt detected in settle_plan!")
 
 class TestAddExpenseCommand(unittest.TestCase):
 
