@@ -38,6 +38,12 @@ def cmd_add_expense(args):
         print(f"Error: Group '{args.group}' not found.")
         return
 
+    paid_by = args.paid_by.lower()
+    members = group.get("members", [])
+    if paid_by not in members:
+        print(f"Error: '{paid_by}' is not a member of the group.")
+        return
+
     amount = float(args.amount)
     if not math.isfinite(amount) or amount <= 0:
         print(f"Error: Amount must be a finite number greater than 0, got '{args.amount}'.")
