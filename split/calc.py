@@ -6,6 +6,36 @@ from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_UP
 _SCALE = Decimal("0.01")
 
 
+def to_paise(amount):
+    """Converts a rupee amount (int, float, str, or Decimal) to integer paise.
+
+    Uses Decimal with ROUND_HALF_UP to ensure consistent monetary rounding
+    across all operations. Non-finite values (NaN, Inf) and invalid inputs
+    raise ValueError or TypeError.
+    """
+    if amount is None or isinstance(amount, bool) or not isinstance(amount, (int, float, str, Decimal)):
+        raise TypeError(f"Unsupported type for monetary amount: {type(amount).__name__}")
+
+    if isinstance(amount, Decimal):
+        d = amount
+    elif isinstance(amount, str):
+        try:
+            d = Decimal(amount.strip())
+        except Exception as e:
+            raise ValueError(f"Invalid monetary amount: {amount!r}") from e
+    else:  # int or float
+        try:
+            d = Decimal(str(amount))
+        except Exception as e:
+            raise ValueError(f"Invalid monetary amount: {amount!r}") from e
+
+    if not d.is_finite():
+        raise ValueError(f"Monetary amount must be finite, got {amount!r}")
+
+    paise_decimal = (d * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return int(paise_decimal)
+
+
 def split_equally(amount, num_people):
     """Splits a total amount equally among a given number of people."""
     if num_people <= 0:
@@ -13,6 +43,39 @@ def split_equally(amount, num_people):
 
     each = int(amount) // num_people
     return {"each": each}
+
+
+def _split_by_share_paise(amount, shares):
+    """Splits an amount according to given proportion weights in a dictionary,
+    returning each participant's allocation directly in integer paise.
+    """
+    for person, weight in shares.items():
+        if weight <= 0:
+            raise ValueError(
+                f"Weight for {person} must be greater than 0, got {weight}"
+            )
+
+    total_shares = sum(shares.values())
+    if total_shares <= 0:
+        raise ValueError("Total shares must be greater than 0")
+
+    amount_paise = to_paise(amount)
+
+    allocations = {}
+    remainders = []
+    unallocated = amount_paise
+    for person, weight in shares.items():
+        exact = Decimal(amount_paise) * Decimal(str(weight)) / Decimal(str(total_shares))
+        base = int(exact.to_integral_value(rounding=ROUND_FLOOR))
+        allocations[person] = base
+        unallocated -= base
+        remainders.append((exact - base, person))
+
+    remainders.sort(key=lambda item: (-item[0],))
+    for i in range(unallocated):
+        allocations[remainders[i % len(remainders)][1]] += 1
+
+    return allocations
 
 
 def split_by_share(amount, shares):
@@ -24,42 +87,7 @@ def split_by_share(amount, shares):
     the participants with the largest fractional remainders (ties broken by
     their order in ``shares``), which keeps the result deterministic.
     """
-    # Every individual weight must be a positive share.  Checking only the
-    # total would let a zero or negative weight through whenever the other
-    # weights make the sum positive, producing zero or negative allocations.
-    for person, weight in shares.items():
-        if weight <= 0:
-            raise ValueError(
-                f"Weight for {person} must be greater than 0, got {weight}"
-            )
-
-    total_shares = sum(shares.values())
-    if total_shares <= 0:
-        raise ValueError("Total shares must be greater than 0")
-
-    amount_paise = int(
-        (Decimal(str(amount)) / _SCALE).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-    )
-
-    # Give everyone the floor of their proportional share (an exact integer
-    # computation in paise), then record how much each is short of it.
-    allocations = {}
-    remainders = []
-    unallocated = amount_paise
-    for person, weight in shares.items():
-        exact = Decimal(amount_paise) * Decimal(str(weight)) / Decimal(str(total_shares))
-        base = int(exact.to_integral_value(rounding=ROUND_FLOOR))
-        allocations[person] = base
-        unallocated -= base
-        remainders.append((exact - base, person))
-
-    # Hand out the leftover paise to the largest fractional remainders first;
-    # ties are broken by the participant's order in ``shares`` so the result is
-    # deterministic.
-    remainders.sort(key=lambda item: (-item[0],))
-    for i in range(unallocated):
-        allocations[remainders[i % len(remainders)][1]] += 1
-
+    allocations = _split_by_share_paise(amount, shares)
     result = {}
     for person in shares:
         result[person] = float(Decimal(allocations[person]) * _SCALE)
@@ -69,12 +97,12 @@ def split_by_share(amount, shares):
 def _expense_shares_paise(expense, members):
     """Returns each member's share of an expense in paise."""
     amount = expense.get("amount", 0.0)
-    amount_paise = int(round(amount * 100))
+    amount_paise = to_paise(amount)
 
     if expense.get("split") == "share":
-        shares = split_by_share(amount, expense.get("shares", {}))
+        allocated = _split_by_share_paise(amount, expense.get("shares", {}))
         return {
-            member: int(round(shares.get(member, 0.0) * 100))
+            member: allocated.get(member, 0)
             for member in members
         }
 
@@ -98,7 +126,7 @@ def get_net_balances(group_data):
     
     for exp in group_data.get("expenses", []):
         paid_by = exp.get("paid_by")
-        amount_paise = int(round(exp.get("amount", 0.0) * 100))
+        amount_paise = to_paise(exp.get("amount", 0.0))
         
         balances[paid_by] += amount_paise
 
@@ -108,7 +136,7 @@ def get_net_balances(group_data):
     for st in group_data.get("settlements", []):
         payer = st["from"]
         receiver = st["to"]
-        amount_paise = int(round(st["amount"] * 100))
+        amount_paise = to_paise(st["amount"])
         # Ignore invalid settlement amounts (must be positive)
         if amount_paise <= 0:
             continue
@@ -136,7 +164,7 @@ def who_owes(group_data):
     for st in group_data.get("settlements", []):
         payer = st["from"]
         receiver = st["to"]
-        amount_paise = int(round(st["amount"] * 100))
+        amount_paise = to_paise(st["amount"])
         # Ignore invalid settlement amounts (must be positive)
         if amount_paise <= 0:
             continue
