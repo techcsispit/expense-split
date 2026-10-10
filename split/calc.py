@@ -95,16 +95,16 @@ def get_net_balances(group_data):
         return {}
 
     balances = {m: 0 for m in members}
-    
+
     for exp in group_data.get("expenses", []):
         paid_by = exp.get("paid_by")
         amount_paise = int(round(exp.get("amount", 0.0) * 100))
-        
+
         balances[paid_by] += amount_paise
 
         for m, share in _expense_shares_paise(exp, members).items():
             balances[m] -= share
-            
+
     for st in group_data.get("settlements", []):
         payer = st["from"]
         receiver = st["to"]
@@ -123,9 +123,9 @@ def who_owes(group_data):
     members = group_data.get("members", [])
     if not members:
         return []
-        
+
     owes = {m: {m2: 0 for m2 in members} for m in members}
-    
+
     for exp in group_data.get("expenses", []):
         paid_by = exp.get("paid_by")
         for m, share in _expense_shares_paise(exp, members).items():
@@ -152,47 +152,101 @@ def who_owes(group_data):
                 debts.append({"from": m1, "to": m2, "amount": net / 100.0})
             elif net < 0:
                 debts.append({"from": m2, "to": m1, "amount": -net / 100.0})
-                
+
     return debts
 
 
 def settle_plan(group_data):
-    """Returns the smallest list of payments that clears everything."""
+    """Returns the smallest list of payments that clears all net balances."""
     balances = get_net_balances(group_data)
-    
-    debtors = []
-    creditors = []
-    
-    for person, balance in balances.items():
-        if balance < 0:
-            debtors.append([person, -balance])
-        elif balance > 0:
-            creditors.append([person, balance])
-            
-    debtors.sort(key=lambda x: x[1], reverse=True)
-    creditors.sort(key=lambda x: x[1], reverse=True)
-    
+
+    # Filter out participants with zero balance
+    non_zero = [(person, bal) for person, bal in balances.items() if bal != 0]
+    if not non_zero:
+        return []
+
+    # Separate into positive (creditors) and negative (debtors) balances in paise
+    # bal > 0: creditor, bal < 0: debtor
+    # Group participants into independent zero-sum subsets to maximize K,
+    # where total participants N - K gives minimum number of transactions.
+
+    def solve_subset(members_with_bal):
+        """Settle a zero-sum subset greedily/sequentially using debt matching."""
+        debtors = [[p, -b] for p, b in members_with_bal if b < 0]
+        creditors = [[p, b] for p, b in members_with_bal if b > 0]
+
+        # Sort deterministically for consistent output
+        debtors.sort(key=lambda x: (-x[1], x[0]))
+        creditors.sort(key=lambda x: (-x[1], x[0]))
+
+        sub_payments = []
+        i = 0
+        j = 0
+        while i < len(debtors) and j < len(creditors):
+            debtor, d_amount = debtors[i]
+            creditor, c_amount = creditors[j]
+
+            settle_amount = min(d_amount, c_amount)
+            if settle_amount > 0:
+                sub_payments.append({
+                    "from": debtor,
+                    "to": creditor,
+                    "amount": settle_amount / 100.0
+                })
+
+            debtors[i][1] -= settle_amount
+            creditors[j][1] -= settle_amount
+
+            if debtors[i][1] == 0:
+                i += 1
+            if creditors[j][1] == 0:
+                j += 1
+        return sub_payments
+
+    n = len(non_zero)
+    # Find a partition into maximum number of zero-sum subsets
+    # Memoization cache for subset problem
+    memo = {}
+
+    def get_max_subsets(mask):
+        if mask == 0:
+            return 0, []
+        if mask in memo:
+            return memo[mask]
+
+        # We can fix the lowest set bit in mask to avoid redundant symmetric partitions
+        lowest_bit = mask & -mask
+        submask = (mask - 1) & mask
+
+        best_count = -1
+        best_subsets = []
+
+        # Iterate through all submasks containing lowest_bit
+        curr = submask
+        while True:
+            candidate_mask = curr | lowest_bit
+            # Check if candidate_mask sums to 0
+            subset_sum = sum(non_zero[idx][1] for idx in range(n) if (candidate_mask & (1 << idx)))
+            if subset_sum == 0:
+                rem_count, rem_subsets = get_max_subsets(mask ^ candidate_mask)
+                if 1 + rem_count > best_count:
+                    best_count = 1 + rem_count
+                    best_subsets = [candidate_mask] + rem_subsets
+            if curr == 0:
+                break
+            curr = (curr - 1) & submask
+
+        memo[mask] = (best_count, best_subsets)
+        return memo[mask]
+
+    full_mask = (1 << n) - 1
+    _, optimal_subsets = get_max_subsets(full_mask)
+
     payments = []
-    i = 0
-    j = 0
-    while i < len(debtors) and j < len(creditors):
-        debtor, d_amount = debtors[i]
-        creditor, c_amount = creditors[j]
-        
-        settle_amount = min(d_amount, c_amount)
-        
-        payments.append({
-            "from": debtor,
-            "to": creditor,
-            "amount": settle_amount / 100.0
-        })
-        
-        debtors[i][1] -= settle_amount
-        creditors[j][1] -= settle_amount
-        
-        if debtors[i][1] == 0:
-            i += 1
-        if creditors[j][1] == 0:
-            j += 1
-            
+    for s_mask in optimal_subsets:
+        subset_members = [non_zero[idx] for idx in range(n) if (s_mask & (1 << idx))]
+        payments.extend(solve_subset(subset_members))
+
+    # Sort payments for deterministic output (by from, then to)
+    payments.sort(key=lambda p: (p["from"], p["to"]))
     return payments

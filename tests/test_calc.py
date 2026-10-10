@@ -259,5 +259,193 @@ class TestSettleCommand(unittest.TestCase):
         self.assertIn("No pending debt found between priya and ravi.", output.getvalue())
 
 
+class TestSettlePlan(unittest.TestCase):
+    """Tests for minimum-transaction settle_plan calculation."""
+
+    def _verify_plan(self, group_data, expected_max_payments=None):
+        """Helper to verify that payments clear all net balances and are valid."""
+        initial_balances = get_net_balances(group_data)
+        payments = settle_plan(group_data)
+
+        if expected_max_payments is not None:
+            self.assertLessEqual(
+                len(payments),
+                expected_max_payments,
+                f"Expected at most {expected_max_payments} payments, got {len(payments)}"
+            )
+
+        # Check payment properties
+        calculated_balances = dict(initial_balances)
+        for p in payments:
+            self.assertGreater(p["amount"], 0, "Payment amount must be positive")
+            self.assertNotEqual(p["from"], p["to"], "Participant cannot pay themselves")
+            amount_paise = int(round(p["amount"] * 100))
+            calculated_balances[p["from"]] += amount_paise
+            calculated_balances[p["to"]] -= amount_paise
+
+        # Every net balance must be exactly 0 after applying payments
+        for person, bal in calculated_balances.items():
+            self.assertEqual(bal, 0, f"Net balance for {person} was not cleared: {bal}")
+
+        return payments
+
+    def test_reported_issue_16_example(self):
+        """Reported Issue #16 example: 5 participants where greedy gives 4 payments but minimum is 3."""
+        group_data = {
+            "members": ["alice", "bob", "charlie", "david", "eve"],
+            "expenses": [
+                {"paid_by": "charlie", "amount": 200.0, "split": "share", "shares": {"alice": 200}},
+                {"paid_by": "david", "amount": 200.0, "split": "share", "shares": {"alice": 100, "bob": 100}},
+                {"paid_by": "eve", "amount": 100.0, "split": "share", "shares": {"bob": 100}},
+            ]
+        }
+        # Balances: Alice -300, Bob -200, Charlie +200, David +200, Eve +100
+        payments = self._verify_plan(group_data, expected_max_payments=3)
+        self.assertEqual(len(payments), 3)
+
+    def test_empty_group_or_already_settled(self):
+        """Empty group or zero net balances should return no payments."""
+        self.assertEqual(settle_plan({}), [])
+        self.assertEqual(settle_plan({"members": ["alice", "bob"], "expenses": []}), [])
+
+    def test_single_debtor_single_creditor(self):
+        """One debtor and one creditor needs exactly 1 payment."""
+        group_data = {
+            "members": ["alice", "bob"],
+            "expenses": [{"paid_by": "bob", "amount": 100.0, "split": "equal"}]
+        }
+        payments = self._verify_plan(group_data, expected_max_payments=1)
+        self.assertEqual(len(payments), 1)
+
+    def test_participant_with_zero_balance(self):
+        """Participants with 0 net balance should not be involved in payments."""
+        group_data = {
+            "members": ["alice", "bob", "charlie"],
+            "expenses": [{"paid_by": "bob", "amount": 100.0, "split": "share", "shares": {"alice": 100}}]
+        }
+        # Charlie has 0 balance
+        payments = self._verify_plan(group_data, expected_max_payments=1)
+        for p in payments:
+            self.assertNotIn("charlie", (p["from"], p["to"]))
+
+    def test_greedy_already_optimal(self):
+        """Cases where simple matching is already optimal."""
+        group_data = {
+            "members": ["alice", "bob", "charlie"],
+            "expenses": [
+                {"paid_by": "charlie", "amount": 300.0, "split": "share", "shares": {"alice": 100, "bob": 200}}
+            ]
+        }
+        self._verify_plan(group_data, expected_max_payments=2)
+
+    def test_multiple_zero_sum_subsets(self):
+        """Multiple independent zero-sum subsets (e.g., A+B=0, C+D=0)."""
+        group_data = {
+            "members": ["alice", "bob", "charlie", "david"],
+            "expenses": [
+                {"paid_by": "bob", "amount": 100.0, "split": "share", "shares": {"alice": 100}},
+                {"paid_by": "david", "amount": 200.0, "split": "share", "shares": {"charlie": 200}},
+            ]
+        }
+        # Subsets: {alice: -100, bob: +100} and {charlie: -200, david: +200} -> 2 payments total
+        payments = self._verify_plan(group_data, expected_max_payments=2)
+        self.assertEqual(len(payments), 2)
+
+    def test_equal_and_unequal_debts(self):
+        """Equal and unequal debt combinations maintain exact net balance clearing."""
+        group_data = {
+            "members": ["a", "b", "c", "d", "e", "f"],
+            "expenses": [
+                {"paid_by": "a", "amount": 600.0, "split": "equal"}
+            ]
+        }
+        self._verify_plan(group_data)
+
+    def test_brute_force_reference_comparison(self):
+        """Compare against brute-force verification for small group configurations."""
+        def brute_force_min_transactions(balances_dict):
+            """Independent reference solver: finds max zero-sum subset partition size by checking combinations."""
+            non_zero_vals = [b for b in balances_dict.values() if b != 0]
+            if not non_zero_vals:
+                return 0
+            n = len(non_zero_vals)
+
+            def max_partitions(elements):
+                if not elements:
+                    return 0
+                first = elements[0]
+                rest = elements[1:]
+                best_k = -1
+                from itertools import combinations
+                for r in range(len(rest) + 1):
+                    for combo in combinations(rest, r):
+                        if first + sum(combo) == 0:
+                            rem = list(rest)
+                            for item in combo:
+                                rem.remove(item)
+                            res = max_partitions(rem)
+                            if res != -1 and 1 + res > best_k:
+                                best_k = 1 + res
+                return best_k
+
+            k = max_partitions(non_zero_vals)
+            return n - k
+
+        # Test a set of complex balance scenarios
+        configs = [
+            [-50, -50, 100],
+            [-100, -200, 150, 150],
+            [-300, -200, 200, 200, 100],
+            [-400, -100, 250, 250],
+            [-10, -20, -30, 60],
+            [-30, -30, -40, 50, 50],
+        ]
+        for idx, balances_list in enumerate(configs):
+            members = [f"m{i}" for i in range(len(balances_list))]
+            # Construct expenses where each creditor paid for debtors proportionally
+            # To cleanly yield net balances bal_i:
+            # For each member i with bal_i > 0, member i pays bal_i for debtor members
+            expenses = []
+            creditor_indices = [i for i, b in enumerate(balances_list) if b > 0]
+            debtor_indices = [i for i, b in enumerate(balances_list) if b < 0]
+
+            # We can create expenses for creditors: creditor c pays c_amount, allocated to debtors in proportion to their debts
+            total_debt = sum(-balances_list[d] for d in debtor_indices)
+            debt_shares = {members[d]: float(-balances_list[d]) for d in debtor_indices}
+
+            for c in creditor_indices:
+                c_amount = float(balances_list[c])
+                expenses.append({
+                    "paid_by": members[c],
+                    "amount": c_amount,
+                    "split": "share",
+                    "shares": debt_shares
+                })
+
+            group_data = {"members": members, "expenses": expenses}
+            initial_balances = get_net_balances(group_data)
+
+            # Assert that derived initial_balances exactly equal balances_list in paise
+            expected_balances = {members[i]: balances_list[i] * 100 for i in range(len(balances_list))}
+            self.assertEqual(
+                initial_balances,
+                expected_balances,
+                f"Config {balances_list}: derived net balances {initial_balances} do not match expected {expected_balances}"
+            )
+
+            # 1. Run production settle_plan and verify correctness
+            payments = self._verify_plan(group_data)
+
+            # 2. Run independent brute-force solver
+            ref_min = brute_force_min_transactions(initial_balances)
+
+            # 3. Assert settle_plan matches minimum transaction count
+            self.assertEqual(
+                len(payments),
+                ref_min,
+                f"Config {balances_list}: settle_plan gave {len(payments)} payments, reference min is {ref_min}"
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
