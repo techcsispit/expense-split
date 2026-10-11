@@ -111,8 +111,23 @@ def cmd_settle(args):
     payer = args.payer.lower()
     receiver = args.receiver.lower()
     debts = who_owes(group)
+    planned_payments = settle_plan(group)
 
-    owed_record = next((d for d in debts if d["from"] == payer and d["to"] == receiver), None)
+    # Prefer the globally netted amount when this pair appears in the current
+    # plan. The direct pairwise amount can differ, and choosing it would record
+    # only part of the payment that settle-plan told the user to make.
+    owed_record = next(
+        (p for p in planned_payments if p["from"] == payer and p["to"] == receiver),
+        None,
+    )
+
+    # A direct pairwise debt that is not part of the optimized plan remains a
+    # valid settlement too, preserving the existing settle command behavior.
+    if not owed_record:
+        owed_record = next(
+            (d for d in debts if d["from"] == payer and d["to"] == receiver),
+            None,
+        )
 
     if not owed_record:
         print(f"No pending debt found between {args.payer} and {args.receiver}.")

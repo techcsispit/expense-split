@@ -258,6 +258,128 @@ class TestSettleCommand(unittest.TestCase):
         )
         self.assertIn("No pending debt found between priya and ravi.", output.getvalue())
 
+    def test_settle_accepts_payment_generated_by_settlement_plan(self):
+        group = {
+            "members": ["alice", "bob", "charlie"],
+            "expenses": [
+                {
+                    "paid_by": "alice",
+                    "amount": 60.0,
+                    "split": "share",
+                    "shares": {"alice": 1, "bob": 1},
+                },
+                {
+                    "paid_by": "bob",
+                    "amount": 60.0,
+                    "split": "share",
+                    "shares": {"bob": 1, "charlie": 1},
+                },
+            ],
+            "settlements": [],
+        }
+        args = SimpleNamespace(group="chain", payer="charlie", receiver="alice")
+
+        self.assertEqual(
+            settle_plan(group),
+            [{"from": "charlie", "to": "alice", "amount": 30.0}],
+        )
+        self.assertEqual(who_owes(group), [
+            {"from": "bob", "to": "alice", "amount": 30.0},
+            {"from": "charlie", "to": "bob", "amount": 30.0},
+        ])
+
+        with patch("split.cli.load_group", return_value=group), \
+                patch("split.cli.save_group") as save_group, \
+                redirect_stdout(io.StringIO()):
+            cmd_settle(args)
+
+        save_group.assert_called_once_with("chain", group)
+        self.assertEqual(
+            group["settlements"],
+            [{"from": "charlie", "to": "alice", "amount": 30.0}],
+        )
+        self.assertEqual(settle_plan(group), [])
+        self.assertEqual(who_owes(group), [])
+
+    def test_summary_and_plan_agree_after_transitive_settlement(self):
+        group = {
+            "members": ["alice", "bob", "charlie"],
+            "expenses": [
+                {
+                    "paid_by": "alice",
+                    "amount": 60.0,
+                    "split": "share",
+                    "shares": {"alice": 1, "bob": 1},
+                },
+                {
+                    "paid_by": "bob",
+                    "amount": 60.0,
+                    "split": "share",
+                    "shares": {"bob": 1, "charlie": 1},
+                },
+            ],
+            "settlements": [
+                {"from": "charlie", "to": "alice", "amount": 30.0},
+            ],
+        }
+
+        self.assertEqual(get_net_balances(group), {
+            "alice": 0,
+            "bob": 0,
+            "charlie": 0,
+        })
+        self.assertEqual(settle_plan(group), [])
+        self.assertEqual(who_owes(group), [])
+
+    def test_settle_records_full_planned_amount_when_direct_debt_is_smaller(self):
+        group = {
+            "members": ["alice", "bob", "charlie", "david", "eve"],
+            "expenses": [
+                {
+                    "paid_by": "charlie",
+                    "amount": 200.0,
+                    "split": "share",
+                    "shares": {"alice": 200},
+                },
+                {
+                    "paid_by": "david",
+                    "amount": 200.0,
+                    "split": "share",
+                    "shares": {"alice": 100, "bob": 100},
+                },
+                {
+                    "paid_by": "eve",
+                    "amount": 100.0,
+                    "split": "share",
+                    "shares": {"bob": 100},
+                },
+            ],
+            "settlements": [],
+        }
+        args = SimpleNamespace(group="group", payer="alice", receiver="david")
+
+        self.assertEqual(
+            next(d for d in who_owes(group)
+                 if d["from"] == "alice" and d["to"] == "david")["amount"],
+            100.0,
+        )
+        self.assertEqual(
+            next(p for p in settle_plan(group)
+                 if p["from"] == "alice" and p["to"] == "david")["amount"],
+            200.0,
+        )
+
+        with patch("split.cli.load_group", return_value=group), \
+                patch("split.cli.save_group") as save_group, \
+                redirect_stdout(io.StringIO()):
+            cmd_settle(args)
+
+        save_group.assert_called_once_with("group", group)
+        self.assertEqual(
+            group["settlements"],
+            [{"from": "alice", "to": "david", "amount": 200.0}],
+        )
+
 
 class TestSettlePlan(unittest.TestCase):
     """Tests for minimum-transaction settle_plan calculation."""

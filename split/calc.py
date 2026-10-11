@@ -119,7 +119,12 @@ def get_net_balances(group_data):
 
 
 def who_owes(group_data):
-    """Calculates netted pairwise debts between members."""
+    """Calculates netted pairwise debts between members.
+
+    Pairwise netting can create circular obligations after somebody follows a
+    globally netted settlement plan.  Such cycles have no effect on anyone's
+    net balance, so remove them before reporting the remaining debts.
+    """
     members = group_data.get("members", [])
     if not members:
         return []
@@ -137,21 +142,73 @@ def who_owes(group_data):
         payer = st["from"]
         receiver = st["to"]
         amount_paise = int(round(st["amount"] * 100))
-        # Ignore invalid settlement amounts (must be positive)
         if amount_paise <= 0:
             continue
         owes[payer][receiver] -= amount_paise
 
-    debts = []
+    # Convert each pair to a single directed edge before cancelling cycles.
+    edges = {member: {} for member in members}
     for i in range(len(members)):
         for j in range(i + 1, len(members)):
             m1 = members[i]
             m2 = members[j]
             net = owes[m1][m2] - owes[m2][m1]
             if net > 0:
-                debts.append({"from": m1, "to": m2, "amount": net / 100.0})
+                edges[m1][m2] = net
             elif net < 0:
-                debts.append({"from": m2, "to": m1, "amount": -net / 100.0})
+                edges[m2][m1] = -net
+
+    def find_cycle():
+        """Returns one directed cycle as edge pairs, or None if acyclic."""
+        visited = set()
+        active = set()
+        path = []
+
+        def visit(person):
+            visited.add(person)
+            active.add(person)
+            path.append(person)
+
+            for receiver, amount in edges[person].items():
+                if amount <= 0:
+                    continue
+                if receiver in active:
+                    start = path.index(receiver)
+                    nodes = path[start:] + [receiver]
+                    return list(zip(nodes, nodes[1:]))
+                if receiver not in visited:
+                    cycle = visit(receiver)
+                    if cycle:
+                        return cycle
+
+            path.pop()
+            active.remove(person)
+            return None
+
+        for member in members:
+            if member not in visited:
+                cycle = visit(member)
+                if cycle:
+                    return cycle
+        return None
+
+    while True:
+        cycle = find_cycle()
+        if not cycle:
+            break
+        cancelled = min(edges[payer][receiver] for payer, receiver in cycle)
+        for payer, receiver in cycle:
+            edges[payer][receiver] -= cancelled
+
+    debts = []
+    for i in range(len(members)):
+        for j in range(i + 1, len(members)):
+            m1 = members[i]
+            m2 = members[j]
+            if edges[m1].get(m2, 0) > 0:
+                debts.append({"from": m1, "to": m2, "amount": edges[m1][m2] / 100.0})
+            elif edges[m2].get(m1, 0) > 0:
+                debts.append({"from": m2, "to": m1, "amount": edges[m2][m1] / 100.0})
 
     return debts
 
