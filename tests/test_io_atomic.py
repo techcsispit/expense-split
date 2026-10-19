@@ -206,7 +206,8 @@ class TestSaveGroupAtomicBehavior(unittest.TestCase):
             with self.assertRaises(OSError):
                 io.save_group("g1", {"name": "Broken"}, filepath=self.filepath)
 
-        leftovers = [p for p in self.dir.iterdir() if p.name != self.filepath.name]
+        expected_names = {self.filepath.name, f"{self.filepath.name}.lock"}
+        leftovers = [p for p in self.dir.iterdir() if p.name not in expected_names]
         self.assertEqual(leftovers, [])
 
     # ------------------------------------------------------------------ #
