@@ -73,7 +73,11 @@ def _split_by_share_paise(amount, shares):
                 f"Weight for {person} must be greater than 0, got {weight}"
             )
 
-    total_shares = sum(shares.values())
+    decimal_shares = {
+        person: Decimal(str(weight))
+        for person, weight in shares.items()
+    }
+    total_shares = sum(decimal_shares.values(), Decimal("0"))
     if total_shares <= 0:
         raise ValueError("Total shares must be greater than 0")
 
@@ -83,11 +87,11 @@ def _split_by_share_paise(amount, shares):
     remainders = []
     unallocated = amount_paise
 
-    for person, weight in shares.items():
+    for person, weight in decimal_shares.items():
         exact = (
             Decimal(amount_paise)
-            * Decimal(str(weight))
-            / Decimal(str(total_shares))
+            * weight
+            / total_shares
         )
         base = int(exact.to_integral_value(rounding=ROUND_FLOOR))
 
