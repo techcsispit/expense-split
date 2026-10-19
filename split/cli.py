@@ -4,7 +4,14 @@ import argparse
 from decimal import Decimal
 import math
 import sys
-from split.calc import split_equally, who_owes, settle_plan, to_paise, _SCALE
+from split.calc import (
+    split_equally,
+    who_owes,
+    settle_plan,
+    get_net_balances,
+    to_paise,
+    _SCALE,
+)
 from split.io import load_group, save_group, load_all_groups
 
 
@@ -73,6 +80,40 @@ def _find_expense_index(expenses, target_id):
         pass
 
     return None
+
+
+def _plan_clears_current_balances(group, payments):
+    """Return whether `payments` exactly clears the group's current balances."""
+    if not isinstance(payments, list) or not payments:
+        return False
+
+    balances = get_net_balances(group)
+    try:
+        for payment in payments:
+            payer = payment["from"]
+            receiver = payment["to"]
+            amount_paise = to_paise(payment["amount"])
+            if (
+                payer == receiver
+                or payer not in balances
+                or receiver not in balances
+                or amount_paise <= 0
+            ):
+                return False
+            balances[payer] += amount_paise
+            balances[receiver] -= amount_paise
+    except (KeyError, TypeError, ValueError):
+        return False
+
+    return all(balance == 0 for balance in balances.values())
+
+
+def _active_settlement_plan(group):
+    """Return a still-valid saved plan, otherwise calculate a fresh plan."""
+    pending = group.get("pending_settlement_plan")
+    if _plan_clears_current_balances(group, pending):
+        return pending
+    return settle_plan(group)
 
 
 def _validate_expense_fields(group, description, amount_raw, paid_by_raw, split_raw, share_weights_raw):
@@ -161,6 +202,7 @@ def cmd_add_expense(args):
 
     expenses.append(new_expense)
     group["expenses"] = expenses
+    group.pop("pending_settlement_plan", None)
     save_group(args.group, group)
     print(f"Added expense '{validated['description']}' of ₹{validated['amount']:.2f} to {args.group}.")
 
@@ -206,6 +248,7 @@ def cmd_edit_expense(args):
     new_expenses = list(expenses)
     new_expenses[idx] = updated_expense
     group["expenses"] = new_expenses
+    group.pop("pending_settlement_plan", None)
     save_group(args.group, group)
     print(f"Updated expense ID {original_id} in {args.group}.")
 
@@ -228,6 +271,7 @@ def cmd_delete_expense(args):
 
     new_expenses = [exp for i, exp in enumerate(expenses) if i != idx]
     group["expenses"] = new_expenses
+    group.pop("pending_settlement_plan", None)
     save_group(args.group, group)
     if target_desc:
         print(f"Deleted expense ID {target_id} ('{target_desc}') from {args.group}.")
@@ -244,7 +288,7 @@ def cmd_settle(args):
     payer = args.payer.lower()
     receiver = args.receiver.lower()
     debts = who_owes(group)
-    planned_payments = settle_plan(group)
+    planned_payments = _active_settlement_plan(group)
 
     # Prefer the globally netted amount when this pair appears in the current
     # plan. The direct pairwise amount can differ, and choosing it would record
@@ -261,6 +305,9 @@ def cmd_settle(args):
             (d for d in debts if d["from"] == payer and d["to"] == receiver),
             None,
         )
+        using_planned_payment = False
+    else:
+        using_planned_payment = True
 
     if not owed_record:
         print(f"No pending debt found between {args.payer} and {args.receiver}.")
@@ -299,6 +346,30 @@ def cmd_settle(args):
         "amount": amount
     })
     group["settlements"] = settlements
+
+    if using_planned_payment:
+        remaining_plan = [dict(payment) for payment in planned_payments]
+        payment_index = next(
+            index
+            for index, payment in enumerate(remaining_plan)
+            if payment["from"] == payer and payment["to"] == receiver
+        )
+        remaining_paise = to_paise(remaining_plan[payment_index]["amount"]) - to_paise(amount)
+        if remaining_paise == 0:
+            remaining_plan.pop(payment_index)
+        else:
+            remaining_plan[payment_index]["amount"] = float(
+                Decimal(remaining_paise) * _SCALE
+            )
+
+        if remaining_plan:
+            group["pending_settlement_plan"] = remaining_plan
+        else:
+            group.pop("pending_settlement_plan", None)
+    else:
+        # A direct pairwise settlement deviates from any saved optimized plan.
+        group.pop("pending_settlement_plan", None)
+
     save_group(args.group, group)
     print(f"Settled! {args.payer.capitalize()} paid ₹{amount:.2f} to {args.receiver.capitalize()}.")
 
@@ -309,7 +380,7 @@ def cmd_settle_plan(args):
         print(f"Error: Group '{args.group}' not found.")
         return
 
-    payments = settle_plan(group)
+    payments = _active_settlement_plan(group)
     if not payments:
         print("  All settled up!")
     else:
