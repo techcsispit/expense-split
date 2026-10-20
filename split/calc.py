@@ -426,7 +426,8 @@ def settle_plan(group_data):
 
             zero_masks = [mask for mask in range(1, size) if subset_sum[mask] == 0]
             # Prioritize smaller subsets (higher K) and break ties deterministically
-            zero_masks.sort(key=lambda mask: (mask.bit_count(), mask))
+            # Use bin().count("1") for Python 3.8 and 3.9 compatibility (int.bit_count was added in 3.10)
+            zero_masks.sort(key=lambda mask: (bin(mask).count("1"), mask))
 
             masks_by_lsb = [[] for _ in range(m)]
             for mask in zero_masks:

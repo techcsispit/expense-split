@@ -700,6 +700,17 @@ class TestSettlePlan(unittest.TestCase):
         payments = self._verify_plan(group)
         self.assertTrue(len(payments) > 0)
 
+    def test_settle_plan_python_38_compatibility(self):
+        """Ensure settle_plan runs without relying on Python 3.10+ int.bit_count."""
+        group = {
+            "members": ["alice", "bob", "carol"],
+            "expenses": [
+                {"paid_by": "alice", "amount": 30.0, "split": "equal"}
+            ]
+        }
+        plan = settle_plan(group)
+        self.assertEqual(len(plan), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
