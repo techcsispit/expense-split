@@ -103,6 +103,32 @@ def _validate_group(group_id, group, diagnostics, stats):
         )
         return
 
+    # Check schema_version if present
+    if "schema_version" in group:
+        ver = group["schema_version"]
+        if isinstance(ver, bool) or not isinstance(ver, int) or ver <= 0:
+            diagnostics.append(
+                Diagnostic(
+                    group=group_id,
+                    record_type="group",
+                    record_id=None,
+                    field="schema_version",
+                    message=f"Invalid schema_version {ver!r}. Expected a positive integer.",
+                    hint="Set schema_version to a positive integer (e.g. 1) or omit for legacy unversioned groups.",
+                )
+            )
+        elif ver > 1:  # Current supported schema version
+            diagnostics.append(
+                Diagnostic(
+                    group=group_id,
+                    record_type="group",
+                    record_id=None,
+                    field="schema_version",
+                    message=f"Unsupported future schema_version {ver}. Highest supported version is 1.",
+                    hint="Upgrade expense-split to support newer schema versions.",
+                )
+            )
+
     # Check members
     members_raw = group.get("members")
     known_members = set()

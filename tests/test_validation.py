@@ -450,6 +450,49 @@ class TestDataIntegrityValidation(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(self._read_bytes(), before_bytes)
 
+    def test_schema_version_validation(self):
+        """28: Valid schema_version (1) passes, while non-int and future versions are reported."""
+        # Valid v1
+        g_v1 = {
+            "schema_version": 1,
+            "name": "V1 Group",
+            "members": ["alice", "bob"],
+            "expenses": [],
+            "settlements": []
+        }
+        self._write_store({"g1": g_v1})
+        code, out, _ = self._run_validate_cli()
+        self.assertEqual(code, 0)
+        self.assertIn("Validation completed: 1 group checked, 0 errors found.", out)
+
+        # Invalid type / non-positive
+        for bad_ver in ["one", True, False, -1, 0, 1.5]:
+            with self.subTest(bad_ver=bad_ver):
+                g_bad = {
+                    "schema_version": bad_ver,
+                    "name": "Bad Ver Group",
+                    "members": ["alice"],
+                    "expenses": [],
+                    "settlements": []
+                }
+                self._write_store({"g1": g_bad})
+                code, out, _ = self._run_validate_cli()
+                self.assertEqual(code, 1)
+                self.assertIn("Invalid schema_version", out)
+
+        # Future version
+        g_future = {
+            "schema_version": 2,
+            "name": "Future Group",
+            "members": ["alice"],
+            "expenses": [],
+            "settlements": []
+        }
+        self._write_store({"g1": g_future})
+        code, out, _ = self._run_validate_cli()
+        self.assertEqual(code, 1)
+        self.assertIn("Unsupported future schema_version 2", out)
+
 
 if __name__ == "__main__":
     unittest.main()

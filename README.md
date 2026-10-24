@@ -21,6 +21,7 @@ On Windows, use `python` instead of `python3`.
 |---|---|
 | `summary <group>` | Members, expenses, and who owes whom |
 | `validate-data` | Inspects stored group data, detects integrity errors, and reports diagnostics |
+| `migrate-data (--dry-run\|--apply)` | Inspects and safely migrates legacy unversioned groups to the versioned schema |
 | `add-expense <group> <description> <amount> <paid_by> [equal\|share]` | Records an expense. Split equally unless you say otherwise |
 | `edit-expense <group> <expense_id> <description> <amount> <paid_by> [equal\|share]` | Updates an existing expense by its stable ID |
 | `delete-expense <group> <expense_id>` | Deletes an expense by its stable ID |
@@ -41,6 +42,31 @@ On Windows, use `python` instead of `python3`.
 
     Validation completed: 1 group checked, 1 error found.
     ```
+
+- **Versioned Group Schema and Safe Migrations**:
+  - Groups support an explicit `schema_version` integer field (currently version `1`).
+  - **Legacy Compatibility**: Existing unversioned groups remain fully supported for all normal read and calculation commands (`summary`, `who_owes`, `settle-plan`) without automatic or silent file rewriting.
+  - **Dry-run Mode (`--dry-run`)**: Run `python3 -m split migrate-data --dry-run` to preview proposed group migrations, detect unversioned groups, check source and target schema versions, and validate integrity without modifying data files on disk.
+    ```text
+    Dry run: 2 groups proposed for migration:
+      • Group 'groupA': legacy (unversioned) -> v1
+      • Group 'flatmates': legacy (unversioned) -> v1
+
+    No changes written to disk. Use '--apply' to execute migration.
+    ```
+  - **Apply Mode (`--apply`)**: Run `python3 -m split migrate-data --apply` to execute migrations.
+    ```text
+    Successfully migrated 2 groups:
+      • Group 'groupA': legacy (unversioned) -> v1
+      • Group 'flatmates': legacy (unversioned) -> v1
+    ```
+  - **Deterministic & Idempotent**: Retrying migration on an already-migrated dataset reports `Store is already up-to-date. No migrations required.` and leaves the store unchanged.
+  - **Preservation Guarantees**: Migration deterministically preserves all financial records, single-payer and multiple-payer mappings, weighted split configurations and ratios, expense IDs (including legacy expenses without IDs), settlement history, and optional metadata such as `archived_members`.
+  - **Failure-Safety & Integrity**:
+    - Uses exclusive database file locking to synchronize read-modify-write operations across concurrent CLI processes and threads.
+    - Pre-validates data integrity before performing migrations and re-validates the proposed dataset before writing.
+    - Writes atomically via a temporary file synced to disk, ensuring that failed validations or unexpected interruptions leave the original file byte-for-byte unmodified.
+    - Rejects invalid schema version formats and unsupported future schema versions with actionable errors without altering stored data.
 
 - Every expense is assigned a unique, stable ID within its group. Editing an expense preserves its ID, and deleting an expense leaves all other expense IDs unchanged (no renumbering).
 - Legacy expenses without an explicit ID can be referenced by their 1-based order in the group.
