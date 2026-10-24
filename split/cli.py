@@ -14,6 +14,7 @@ from split.calc import (
 )
 from split.io import load_group, save_group, load_all_groups, DEFAULT_DATA_PATH
 from split.validation import validate_file
+from split.backup import create_backup, restore_backup
 
 
 def cmd_summary(args):
@@ -471,6 +472,56 @@ def cmd_validate_data(args):
         sys.exit(1)
 
 
+def cmd_backup_data(args):
+    filepath = getattr(args, "filepath", DEFAULT_DATA_PATH)
+    output_path = args.output
+
+    result = create_backup(live_path=filepath, output_path=output_path)
+    if not result["success"]:
+        print(f"Backup failed: {result['error']}", file=sys.stderr)
+        sys.exit(1)
+
+    count = result["groups_count"]
+    group_word = "group" if count == 1 else "groups"
+    print(f"Backup created successfully: {result['backup_path']}")
+    print(f"Saved {count} {group_word} with SHA-256 checksum: {result['checksum']}")
+
+
+def cmd_restore_data(args):
+    filepath = getattr(args, "filepath", DEFAULT_DATA_PATH)
+    backup_file = args.backup_file
+    dry_run = not args.apply
+
+    result = restore_backup(backup_path=backup_file, live_path=filepath, dry_run=dry_run)
+
+    if not result["success"]:
+        print(f"Restore failed: {result['error']}", file=sys.stderr)
+        if result.get("diagnostics"):
+            print("\nValidation diagnostics:", file=sys.stderr)
+            for diag in result["diagnostics"]:
+                print(diag.format(), file=sys.stderr)
+                print(file=sys.stderr)
+        sys.exit(1)
+
+    groups_count = result["groups_count"]
+    expenses_count = result["expenses_count"]
+    settlements_count = result["settlements_count"]
+
+    group_word = "group" if groups_count == 1 else "groups"
+    expense_word = "expense" if expenses_count == 1 else "expenses"
+    settlement_word = "settlement" if settlements_count == 1 else "settlements"
+
+    if dry_run:
+        print(f"Dry run: Backup '{backup_file}' is valid and ready for restoration.")
+        print(f"Candidate dataset contains: {groups_count} {group_word}, {expenses_count} {expense_word}, {settlements_count} {settlement_word}.")
+        print("No changes made to live database. Use '--apply' to execute restoration.")
+    else:
+        print(f"Restore completed successfully from '{backup_file}'.")
+        print(f"Restored: {groups_count} {group_word}, {expenses_count} {expense_word}, {settlements_count} {settlement_word}.")
+        if result.get("safety_backup_path"):
+            print(f"Pre-restore safety backup saved at: {result['safety_backup_path']}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Expense Split CLI")
     subparsers = parser.add_subparsers(dest="command", help="Available subcommands")
@@ -483,6 +534,19 @@ def main():
     # validate-data
     p_val = subparsers.add_parser("validate-data", help="Inspect and validate group data integrity")
     p_val.set_defaults(func=cmd_validate_data)
+
+    # backup-data
+    p_bk = subparsers.add_parser("backup-data", help="Create a validated, consistent backup of the group store")
+    p_bk.add_argument("--output", required=True, help="Destination path for backup file")
+    p_bk.set_defaults(func=cmd_backup_data)
+
+    # restore-data
+    p_res = subparsers.add_parser("restore-data", help="Restore group data from a validated backup")
+    p_res.add_argument("backup_file", help="Path to backup file to restore")
+    mode_group = p_res.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument("--dry-run", dest="apply", action="store_false", help="Inspect and validate backup without modifying live store")
+    mode_group.add_argument("--apply", dest="apply", action="store_true", help="Restore candidate data and replace live store atomically")
+    p_res.set_defaults(func=cmd_restore_data)
 
     # add-expense
     p_add = subparsers.add_parser("add-expense", help="Add an expense to a group")
