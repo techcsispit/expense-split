@@ -20,13 +20,21 @@ On Windows, use `python` instead of `python3`.
 | Command | Does |
 |---|---|
 | `summary <group>` | Members, expenses, and who owes whom |
+
 | `validate-data` | Inspects stored group data, detects integrity errors, and reports diagnostics |
+
+| `add-member <group> <member>` | Adds a new active member to a group |
+| `archive-member <group> <member>` | Archives an active member while preserving all historical records |
+| `reactivate-member <group> <member>` | Reactivates an archived member so they can participate in new expenses and settlements |
+
 | `add-expense <group> <description> <amount> <paid_by> [equal\|share]` | Records an expense. Split equally unless you say otherwise |
 | `edit-expense <group> <expense_id> <description> <amount> <paid_by> [equal\|share]` | Updates an existing expense by its stable ID |
 | `delete-expense <group> <expense_id>` | Deletes an expense by its stable ID |
 | `settle <group> <payer> <receiver>` | Records that `payer` paid back what they owe `receiver` |
+| `settle-plan <group>` | Displays an optimized settlement plan to clear all outstanding debts |
 
 ## How it's supposed to work
+
 
 - **Data Integrity Validation**:
   - Run `python3 -m split validate-data` (or `python -m split validate-data` on Windows) to inspect persisted groups without modifying them.
@@ -52,6 +60,21 @@ On Windows, use `python` instead of `python3`.
   - The sum of contributor contributions must equal the expense total exactly in integer paise.
   - Payer contributions specify who paid for the expense, which remains separate from the split (who owes or benefits from the expense).
   - Existing JSON files with single-payer strings remain fully supported without migration.
+
+- **Group Membership Lifecycle**:
+  - `add-member <group> <member>`: Adds a new member to the canonical `members` list.
+  - `archive-member <group> <member>`: Moves an active member to the `archived_members` list. Their historical identity is never erased; all existing expenses, split shares, and settlements involving them remain intact and fully calculated.
+  - `reactivate-member <group> <member>`: Restores an archived member back to active status.
+  - **Active vs. Historical Identity**:
+    - Only active members can pay for new expenses, participate in new expense splits, or be involved in new settlements.
+    - Historical expenses and settlements involving archived members remain readable and contribute to net balances. Outstanding debts involving archived members are visible in `summary` and `settle-plan` (marked as `(archived)`).
+    - To record a settlement for an archived member with an outstanding balance, reactivate the member first (`reactivate-member <group> <member>`), record the payment (`settle`), and re-archive them if desired (`archive-member <group> <member>`).
+  - **Backward Compatibility**: Existing group files without `archived_members` treat all listed members as active without requiring any data migration.
+- Every expense is assigned a unique, stable ID within its group. Editing an expense preserves its ID, and deleting an expense leaves all other expense IDs unchanged (no renumbering).
+- Legacy expenses without an explicit ID can be referenced by their 1-based order in the group.
+- Editing or deleting an expense preserves the exact historical record of all settlements; balances and settlement plans are recalculated from remaining expenses and existing payments.
+- An amount must be more than 0, and whoever paid must be an active member of the group.
+
 - An equal split keeps the paise, and the shares always add up to exactly the total. ₹1000 between three people is ₹333.34, ₹333.33 and ₹333.33.
 - `share` splits by weights, given after it as `name=weight`: `add-expense flatmates "Groceries" 900 karan share karan=2 arjun=1` means Karan's share is twice Arjun's. Multiple contributors can also be combined with weighted splits: `add-expense flatmates "Groceries" 900 karan=600,arjun=300 share karan=2 arjun=1`.
 - The summary shows each pair of people at most once, with the amount after everything is netted out. If Ravi owes Priya ₹300 and Priya owes Ravi ₹100, it shows "Ravi owes Priya ₹200.00".
