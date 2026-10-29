@@ -202,6 +202,46 @@ def get_net_balances(group_data):
     return balances
 
 
+def _allocate_debt_paise(debt_amount, remaining_credits):
+    """Allocate one debtor's amount without exceeding creditor entitlements.
+
+    Rounding against the original creditor totals independently for every
+    debtor preserves each debtor's row total, but can overpay one creditor and
+    underpay another.  Instead, apportion against the credit still outstanding
+    after earlier debtors.  Largest-remainder rounding then preserves both the
+    debtor amount and the final creditor totals exactly.
+    """
+    available_credit = sum(remaining_credits.values())
+    amount_to_allocate = min(debt_amount, available_credit)
+    if amount_to_allocate <= 0:
+        return {}
+
+    allocations = {}
+    remainders = []
+    unallocated = amount_to_allocate
+
+    for creditor, credit_amount in remaining_credits.items():
+        if credit_amount <= 0:
+            continue
+
+        exact = (
+            Decimal(amount_to_allocate)
+            * Decimal(credit_amount)
+            / Decimal(available_credit)
+        )
+        base = int(exact.to_integral_value(rounding=ROUND_FLOOR))
+        allocations[creditor] = base
+        unallocated -= base
+        remainders.append((exact - base, creditor))
+
+    remainders.sort(key=lambda item: -item[0])
+    for i in range(unallocated):
+        creditor = remainders[i][1]
+        allocations[creditor] += 1
+
+    return allocations
+
+
 def who_owes(group_data):
     """Calculates netted pairwise debts between members.
 
@@ -243,28 +283,18 @@ def who_owes(group_data):
         if total_net_credit <= 0:
             continue
 
-        # Each debtor owes each creditor proportionally: debtor_net * (creditor_net / total_net_credit)
-        # Using exact paise allocation to preserve exact totals
+        # Allocate against the credit still outstanding so that paise-level
+        # rounding preserves both every debtor total and every creditor total.
+        remaining_credits = dict(creditors)
         for debtor, debt_amount in debtors.items():
-            allocations = {}
-            remainders = []
-            unallocated = debt_amount
-
-            for creditor, credit_amount in creditors.items():
-                exact = (Decimal(debt_amount) * Decimal(credit_amount)) / Decimal(total_net_credit)
-                base = int(exact.to_integral_value(rounding=ROUND_FLOOR))
-                allocations[creditor] = base
-                unallocated -= base
-                remainders.append((exact - base, creditor))
-
-            remainders.sort(key=lambda item: -item[0])
-            for i in range(unallocated):
-                creditor = remainders[i % len(remainders)][1]
-                allocations[creditor] += 1
+            allocations = _allocate_debt_paise(
+                debt_amount, remaining_credits
+            )
 
             for creditor, portion_paise in allocations.items():
                 if portion_paise > 0:
                     owes[debtor][creditor] += portion_paise
+                    remaining_credits[creditor] -= portion_paise
 
     for settlement in group_data.get("settlements", []):
         payer = settlement["from"]

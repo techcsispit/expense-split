@@ -207,6 +207,44 @@ class TestMultipleExpensePayers(unittest.TestCase):
         self.assertEqual(balances, {"alice": 2, "bob": -2})
         self.assertEqual(who_owes(group), [{"from": "bob", "to": "alice", "amount": 0.02}])
 
+    def test_who_owes_rounding_preserves_each_creditor_net_balance(self):
+        """Issue #47: matrix rounding must preserve both sides exactly."""
+        group = {
+            "name": "Shared purchase",
+            "members": ["alice", "bob", "carol", "dave"],
+            "expenses": [
+                {
+                    "id": 1,
+                    "description": "Supplies",
+                    "amount": 2.02,
+                    "paid_by": {"alice": 1.01, "bob": 1.01},
+                    "split": "share",
+                    "shares": {"carol": 1, "dave": 1},
+                }
+            ],
+            "settlements": [],
+        }
+
+        balances = get_net_balances(group)
+        debts = who_owes(group)
+        implied = {member: 0 for member in group["members"]}
+        for debt in debts:
+            amount_paise = to_paise(debt["amount"])
+            implied[debt["from"]] -= amount_paise
+            implied[debt["to"]] += amount_paise
+
+        self.assertEqual(
+            balances,
+            {"alice": 101, "bob": 101, "carol": -101, "dave": -101},
+        )
+        self.assertEqual(implied, balances)
+        self.assertEqual(debts, [
+            {"from": "carol", "to": "alice", "amount": 0.51},
+            {"from": "dave", "to": "alice", "amount": 0.50},
+            {"from": "carol", "to": "bob", "amount": 0.50},
+            {"from": "dave", "to": "bob", "amount": 0.51},
+        ])
+
     def test_add_expense_cli_multiple_payers_equal_split(self):
         """12: add-expense supports multiple contributors while preserving single-payer."""
         group = {
@@ -491,6 +529,33 @@ class TestMultipleExpensePayers(unittest.TestCase):
         self.assertTrue(success)
         self.assertIn("paid by alice: ₹20.00, bob: ₹10.00", out)
         self.assertIn("Carol owes Alice ₹10.00", out)
+
+    def test_summary_preserves_multi_payer_creditor_totals_after_rounding(self):
+        """The user-facing debt output must agree with calculated balances."""
+        group = {
+            "name": "Shared purchase",
+            "members": ["alice", "bob", "carol", "dave"],
+            "expenses": [
+                {
+                    "id": 1,
+                    "description": "Supplies",
+                    "amount": 2.02,
+                    "paid_by": {"alice": 1.01, "bob": 1.01},
+                    "split": "share",
+                    "shares": {"carol": 1, "dave": 1},
+                }
+            ],
+            "settlements": [],
+        }
+        self._write_store({"g1": group})
+
+        success, out, _ = self._run_cli(["summary", "g1"])
+
+        self.assertTrue(success)
+        self.assertIn("Carol owes Alice ₹0.51", out)
+        self.assertIn("Dave owes Alice ₹0.50", out)
+        self.assertIn("Carol owes Bob ₹0.50", out)
+        self.assertIn("Dave owes Bob ₹0.51", out)
 
 
 if __name__ == "__main__":
