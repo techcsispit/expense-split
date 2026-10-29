@@ -21,7 +21,11 @@ On Windows, use `python` instead of `python3`.
 |---|---|
 | `summary <group>` | Members, expenses, and who owes whom |
 | `validate-data` | Inspects stored group data, detects integrity errors, and reports diagnostics |
+| `backup-data --output <file>` | Creates a validated, consistent snapshot of all groups with SHA-256 integrity verification |
+| `restore-data <backup_file> (--dry-run\|--apply)` | Inspects or atomically restores group data from a validated backup |
+
 | `migrate-data (--dry-run\|--apply)` | Inspects and safely migrates legacy unversioned groups to the versioned schema |
+
 | `add-expense <group> <description> <amount> <paid_by> [equal\|share]` | Records an expense. Split equally unless you say otherwise |
 | `edit-expense <group> <expense_id> <description> <amount> <paid_by> [equal\|share]` | Updates an existing expense by its stable ID |
 | `delete-expense <group> <expense_id>` | Deletes an expense by its stable ID |
@@ -42,6 +46,29 @@ On Windows, use `python` instead of `python3`.
 
     Validation completed: 1 group checked, 1 error found.
     ```
+
+
+- **Validated Backup and Atomic Restore**:
+  - **Creating Backups**:
+    - Run `python3 -m split backup-data --output backups/groups.json` (or `python -m split backup-data --output backups/groups.json` on Windows).
+    - Preserves all groups, member rosters, single-payer and multiple-payer distributions, expense IDs (and un-identified legacy expenses), equal and weighted splits, archived members, and settlement histories.
+    - Synchronized with live database locking to prevent concurrent writes from yielding an inconsistent snapshot.
+    - Rejects output paths pointing to the live database file itself to protect active data.
+    - Backup format specification: versioned envelope containing `backup_version` (`1`), UTC ISO `created_at` timestamp, deterministic canonical SHA-256 `checksum`, and the full `groups` dictionary.
+  - **Restoring Data**:
+    - Restoration supports full-replacement semantics (does not merge or guess diffs).
+    - Requires exactly one mode flag: either `--dry-run` or `--apply`.
+    - **Dry-run Mode (`--dry-run`)**: Run `python3 -m split restore-data backups/groups.json --dry-run` to inspect and validate the backup. Verifies backup envelope structure, validates the SHA-256 checksum, runs data integrity validation on candidate groups, and reports counts of groups, expenses, and settlements without modifying the live store or backup.
+    - **Apply Mode (`--apply`)**: Run `python3 -m split restore-data backups/groups.json --apply` to execute atomic restoration.
+    - **Failure Safety and Pre-Restore Recovery**:
+      - Under an exclusive database lock, creates a pre-restore safety snapshot (named `<live>.pre-restore-<timestamp>.bak`) of the current live database before replacing it.
+      - If backup checksum verification, data integrity validation, safety backup creation, or atomic write fails, the live store is left byte-for-byte unmodified.
+      - Live database replacement is performed atomically via a synced temporary file (`os.replace`), preventing partial writes or database corruption.
+  - **Handling Invalid or Corrupted Backups**:
+    - Corrupted payload files, checksum mismatches, or candidate data violating integrity constraints (e.g., unknown payers or malformed splits) are rejected with clear diagnostics and exit code `1` before modifying live data:
+      ```text
+      Restore failed: Integrity check failed: checksum mismatch in 'backups/corrupted.json'. Expected a1b2..., calculated c3d4...
+      ```
 
 - **Versioned Group Schema and Safe Migrations**:
   - Groups support an explicit `schema_version` integer field (currently version `1`).
@@ -67,6 +94,7 @@ On Windows, use `python` instead of `python3`.
     - Pre-validates data integrity before performing migrations and re-validates the proposed dataset before writing.
     - Writes atomically via a temporary file synced to disk, ensuring that failed validations or unexpected interruptions leave the original file byte-for-byte unmodified.
     - Rejects invalid schema version formats and unsupported future schema versions with actionable errors without altering stored data.
+
 
 - Every expense is assigned a unique, stable ID within its group. Editing an expense preserves its ID, and deleting an expense leaves all other expense IDs unchanged (no renumbering).
 - Legacy expenses without an explicit ID can be referenced by their 1-based order in the group.
