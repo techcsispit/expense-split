@@ -12,9 +12,41 @@ from split.calc import (
     to_paise,
     _SCALE,
 )
+
 from split.io import load_group, save_group, load_all_groups, DEFAULT_DATA_PATH
 from split.validation import validate_file
+import re
+
+
+def get_all_members(group):
+    """Return all canonical member identities in the group."""
+    return list(group.get("members", []))
+
+
+def get_archived_members(group):
+    """Return list of archived member identities in the group."""
+    return list(group.get("archived_members", []))
+
+
+def get_active_members(group):
+    """Return list of currently active member identities in the group."""
+    archived = set(get_archived_members(group))
+    return [m for m in get_all_members(group) if m not in archived]
+
+
+def _validate_member_name(name):
+    """Validate a member name. Returns (valid, error_msg, normalized_name)."""
+    if not isinstance(name, str):
+        return False, "Error: Member name must be a string.", None
+    cleaned = name.strip()
+    if not cleaned:
+        return False, "Error: Member name cannot be empty.", None
+    if "=" in cleaned or "," in cleaned:
+        return False, f"Error: Member name '{name}' contains invalid characters.", None
+    return True, None, cleaned.lower()
+
 from split.migrations import execute_migration
+
 
 
 def cmd_summary(args):
@@ -23,8 +55,14 @@ def cmd_summary(args):
         print(f"Error: Group '{args.group}' not found.")
         return
 
+    active_members = get_active_members(group)
+    archived_members = get_archived_members(group)
+
     print(f"\nGroup: {group.get('name', args.group)}")
-    print(f"Members: {', '.join(group.get('members', []))}")
+    if archived_members:
+        print(f"Members: {', '.join(active_members)} (archived: {', '.join(archived_members)})")
+    else:
+        print(f"Members: {', '.join(active_members)}")
     print("-" * 50)
     print("Expenses:")
     total = 0.0
@@ -44,7 +82,9 @@ def cmd_summary(args):
         print("  All settled up!")
     else:
         for d in debts:
-            print(f"  • {d['from'].capitalize()} owes {d['to'].capitalize()} ₹{d['amount']:.2f}")
+            payer_label = d['from'].capitalize() + (" (archived)" if d['from'] in archived_members else "")
+            receiver_label = d['to'].capitalize() + (" (archived)" if d['to'] in archived_members else "")
+            print(f"  • {payer_label} owes {receiver_label} ₹{d['amount']:.2f}")
 
 
 def _get_max_expense_id(expenses):
@@ -131,7 +171,11 @@ def _validate_expense_fields(group, description, amount_raw, paid_by_raw, split_
 
     Returns (valid, error_msg, validated_dict) tuple.
     """
-    members = group.get("members", [])
+
+    all_members = get_all_members(group)
+    active_members = get_active_members(group)
+    archived_members = get_archived_members(group)
+
 
     try:
         amount_paise = to_paise(amount_raw)
@@ -166,8 +210,10 @@ def _validate_expense_fields(group, description, amount_raw, paid_by_raw, split_
             if not name:
                 return False, f"Error: Invalid payer format '{entry}'. Use name=amount.", None
 
-            if name not in members:
+            if name not in all_members:
                 return False, f"Error: '{name}' is not a member of the group.", None
+            if name in archived_members:
+                return False, f"Error: '{name}' is archived. Reactivate the member before adding an expense.", None
 
             if name in paid_by_dict:
                 return False, f"Error: Duplicate contributor '{name}'.", None
@@ -194,8 +240,10 @@ def _validate_expense_fields(group, description, amount_raw, paid_by_raw, split_
         paid_by = paid_by_dict
     else:
         paid_by = paid_by_raw_clean.lower()
-        if paid_by not in members:
+        if paid_by not in all_members:
             return False, f"Error: '{paid_by}' is not a member of the group.", None
+        if paid_by in archived_members:
+            return False, f"Error: '{paid_by}' is archived. Reactivate the member before adding an expense.", None
 
     split = split_raw.lower() if split_raw else "equal"
     if split not in ("equal", "share"):
@@ -218,8 +266,10 @@ def _validate_expense_fields(group, description, amount_raw, paid_by_raw, split_
             except ValueError:
                 return False, f"Error: Invalid weight '{raw_weight}' for {name}.", None
 
-            if not name or name not in members:
+            if not name or name not in all_members:
                 return False, f"Error: '{name}' is not a member of the group.", None
+            if name in archived_members:
+                return False, f"Error: '{name}' is archived. Reactivate the member before using them in an expense split.", None
             if name in shares:
                 return False, f"Error: Duplicate share for '{name}'.", None
             if not math.isfinite(weight) or weight <= 0:
@@ -350,6 +400,15 @@ def cmd_settle(args):
 
     payer = args.payer.lower()
     receiver = args.receiver.lower()
+    archived_members = get_archived_members(group)
+
+    if payer in archived_members:
+        print(f"Error: '{payer}' is archived. Reactivate the member before settling debts.")
+        return
+    if receiver in archived_members:
+        print(f"Error: '{receiver}' is archived. Reactivate the member before settling debts.")
+        return
+
     debts = who_owes(group)
     planned_payments = _active_settlement_plan(group)
 
@@ -444,12 +503,99 @@ def cmd_settle_plan(args):
         return
 
     payments = _active_settlement_plan(group)
+    archived_members = set(get_archived_members(group))
     if not payments:
         print("  All settled up!")
     else:
         print("Settle Plan:")
         for p in payments:
-            print(f"  • {p['from'].capitalize()} must pay {p['to'].capitalize()} ₹{p['amount']:.2f}")
+            from_label = p['from'].capitalize() + (" (archived)" if p['from'] in archived_members else "")
+            to_label = p['to'].capitalize() + (" (archived)" if p['to'] in archived_members else "")
+            print(f"  • {from_label} must pay {to_label} ₹{p['amount']:.2f}")
+
+
+def cmd_add_member(args):
+    group = load_group(args.group)
+    if not group:
+        print(f"Error: Group '{args.group}' not found.")
+        return
+
+    valid, err_msg, member = _validate_member_name(args.member)
+    if not valid:
+        print(err_msg)
+        return
+
+    all_members = get_all_members(group)
+    archived_members = get_archived_members(group)
+
+    if member in archived_members:
+        print(f"Error: '{member}' is an archived member. Use 'reactivate-member' to reactivate them.")
+        return
+
+    if member in all_members:
+        print(f"Error: '{member}' is already a member of group '{args.group}'.")
+        return
+
+    group.setdefault("members", []).append(member)
+    save_group(args.group, group)
+    print(f"Added member '{member}' to {args.group}.")
+
+
+def cmd_archive_member(args):
+    group = load_group(args.group)
+    if not group:
+        print(f"Error: Group '{args.group}' not found.")
+        return
+
+    valid, err_msg, member = _validate_member_name(args.member)
+    if not valid:
+        print(err_msg)
+        return
+
+    all_members = get_all_members(group)
+    archived_members = get_archived_members(group)
+
+    if member not in all_members:
+        print(f"Error: '{member}' is not a member of group '{args.group}'.")
+        return
+
+    if member in archived_members:
+        print(f"Error: '{member}' is already archived in group '{args.group}'.")
+        return
+
+    group.setdefault("archived_members", []).append(member)
+    save_group(args.group, group)
+    print(f"Archived member '{member}' in {args.group}.")
+
+
+def cmd_reactivate_member(args):
+    group = load_group(args.group)
+    if not group:
+        print(f"Error: Group '{args.group}' not found.")
+        return
+
+    valid, err_msg, member = _validate_member_name(args.member)
+    if not valid:
+        print(err_msg)
+        return
+
+    all_members = get_all_members(group)
+    archived_members = get_archived_members(group)
+
+    if member not in all_members:
+        print(f"Error: '{member}' is not a member of group '{args.group}'.")
+        return
+
+    if member not in archived_members:
+        print(f"Error: '{member}' is already active in group '{args.group}'.")
+        return
+
+    group["archived_members"] = [m for m in archived_members if m != member]
+    if not group["archived_members"]:
+        group.pop("archived_members", None)
+
+    save_group(args.group, group)
+    print(f"Reactivated member '{member}' in {args.group}.")
 
 
 def cmd_validate_data(args):
@@ -521,9 +667,29 @@ def main():
     p_sum.add_argument("group", help="Group identifier (e.g. groupA, flatmates)")
     p_sum.set_defaults(func=cmd_summary)
 
+
     # validate-data
     p_val = subparsers.add_parser("validate-data", help="Inspect and validate group data integrity")
     p_val.set_defaults(func=cmd_validate_data)
+
+    # add-member
+    p_add_m = subparsers.add_parser("add-member", help="Add a member to a group")
+    p_add_m.add_argument("group", help="Group identifier")
+    p_add_m.add_argument("member", help="Member name to add")
+    p_add_m.set_defaults(func=cmd_add_member)
+
+    # archive-member
+    p_arc_m = subparsers.add_parser("archive-member", help="Archive a member in a group")
+    p_arc_m.add_argument("group", help="Group identifier")
+    p_arc_m.add_argument("member", help="Member name to archive")
+    p_arc_m.set_defaults(func=cmd_archive_member)
+
+    # reactivate-member
+    p_rea_m = subparsers.add_parser("reactivate-member", help="Reactivate an archived member in a group")
+    p_rea_m.add_argument("group", help="Group identifier")
+    p_rea_m.add_argument("member", help="Member name to reactivate")
+    p_rea_m.set_defaults(func=cmd_reactivate_member)
+
 
     # migrate-data
     p_mig = subparsers.add_parser("migrate-data", help="Migrate group data to current schema version")
