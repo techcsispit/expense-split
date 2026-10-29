@@ -40,6 +40,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from split.cli import main
+from split.calc import get_net_balances, settle_plan, who_owes
 from split.validation import validate_store, validate_file, Diagnostic
 
 
@@ -92,6 +93,71 @@ class TestDataIntegrityValidation(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("Validation completed: 1 group checked, 0 errors found.", out)
         self.assertEqual(self._read_bytes(), before_bytes)
+
+    def test_validator_approved_payer_identity_is_used_by_all_outputs(self):
+        """Issue #48: validation and calculations share identity rules."""
+        group = {
+            "name": "Flatmates",
+            "members": ["alice", "bob"],
+            "expenses": [{
+                "id": 1,
+                "description": "Meal",
+                "amount": 100.0,
+                "paid_by": " Alice ",
+                "split": "equal",
+            }],
+            "settlements": [],
+        }
+
+        diagnostics, stats = validate_store({"g1": group})
+
+        self.assertEqual(diagnostics, [])
+        self.assertEqual(stats["errors_found"], 0)
+        self.assertEqual(
+            get_net_balances(group),
+            {"alice": 5000, "bob": -5000},
+        )
+        expected = [{"from": "bob", "to": "alice", "amount": 50.0}]
+        self.assertEqual(who_owes(group), expected)
+        self.assertEqual(settle_plan(group), expected)
+
+        out, err = io.StringIO(), io.StringIO()
+        arguments = ["split", "summary", "g1"]
+        with patch.object(sys, "argv", arguments), \
+                patch("split.cli.load_group", return_value=group), \
+                redirect_stdout(out), redirect_stderr(err):
+            main()
+
+        self.assertEqual(err.getvalue(), "")
+        self.assertIn("Bob owes Alice ₹50.00", out.getvalue())
+
+    def test_canonical_member_references_work_across_financial_records(self):
+        """Canonical identity applies to contributors, shares, and settlements."""
+        group = {
+            "name": "Mixed formatting",
+            "members": ["Alice", "BOB"],
+            "expenses": [{
+                "id": 1,
+                "description": "Supplies",
+                "amount": 100.0,
+                "paid_by": {" alice ": 60.0, "Bob": 40.0},
+                "split": "share",
+                "shares": {" ALICE": 1, "bob ": 1},
+            }],
+            "settlements": [{
+                "from": " bob ",
+                "to": "ALICE ",
+                "amount": 10.0,
+            }],
+        }
+
+        diagnostics, stats = validate_store({"g1": group})
+
+        self.assertEqual(diagnostics, [])
+        self.assertEqual(stats["errors_found"], 0)
+        self.assertEqual(get_net_balances(group), {"Alice": 0, "BOB": 0})
+        self.assertEqual(who_owes(group), [])
+        self.assertEqual(settle_plan(group), [])
 
     def test_multiple_valid_groups_inspected(self):
         """2: Multiple valid groups are all inspected."""

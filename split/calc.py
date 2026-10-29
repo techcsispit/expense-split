@@ -122,14 +122,35 @@ def split_by_share(amount, shares):
     }
 
 
+def _member_lookup(members):
+    """Map validator-equivalent member names to their stored identities."""
+    return {
+        member.strip().lower(): member
+        for member in members
+        if isinstance(member, str)
+    }
+
+
+def _resolve_member(member, members_by_name):
+    """Resolve a member reference using the validator's identity rules."""
+    if not isinstance(member, str):
+        return member
+    return members_by_name.get(member.strip().lower(), member)
+
+
 def _expense_shares_paise(expense, members):
     """Return each member's expense share in integer paise."""
     amount = expense.get("amount", 0.0)
     amount_paise = to_paise(amount)
 
     if expense.get("split") == "share":
+        members_by_name = _member_lookup(members)
+        shares = {
+            _resolve_member(person, members_by_name): weight
+            for person, weight in expense.get("shares", {}).items()
+        }
         allocated = _split_by_share_paise(
-            amount, expense.get("shares", {})
+            amount, shares
         )
         return {
             member: allocated.get(member, 0)
@@ -148,19 +169,22 @@ def _expense_shares_paise(expense, members):
     }
 
 
-def _expense_payers_paise(expense):
+def _expense_payers_paise(expense, members):
     """Return each contributor's payment in integer paise.
 
     Supports legacy single payer strings (e.g., "paid_by": "alice")
     and multiple contributors (e.g., "paid_by": {"alice": 20.0, "bob": 10.0}).
     """
     paid_by = expense.get("paid_by")
+    members_by_name = _member_lookup(members)
     if isinstance(paid_by, str):
         amount_paise = to_paise(expense.get("amount", 0.0))
-        return {paid_by: amount_paise}
+        return {
+            _resolve_member(paid_by, members_by_name): amount_paise
+        }
     elif isinstance(paid_by, dict):
         return {
-            person: to_paise(amt)
+            _resolve_member(person, members_by_name): to_paise(amt)
             for person, amt in paid_by.items()
         }
     return {}
@@ -178,7 +202,9 @@ def get_net_balances(group_data):
     balances = {member: 0 for member in members}
 
     for expense in group_data.get("expenses", []):
-        for payer, paid_amount in _expense_payers_paise(expense).items():
+        for payer, paid_amount in _expense_payers_paise(
+            expense, members
+        ).items():
             if payer in balances:
                 balances[payer] += paid_amount
 
@@ -187,9 +213,10 @@ def get_net_balances(group_data):
         ).items():
             balances[member] -= share
 
+    members_by_name = _member_lookup(members)
     for settlement in group_data.get("settlements", []):
-        payer = settlement["from"]
-        receiver = settlement["to"]
+        payer = _resolve_member(settlement["from"], members_by_name)
+        receiver = _resolve_member(settlement["to"], members_by_name)
         amount_paise = to_paise(settlement["amount"])
 
         # Ignore zero or negative settlement amounts.
@@ -219,7 +246,7 @@ def who_owes(group_data):
     }
 
     for expense in group_data.get("expenses", []):
-        payers = _expense_payers_paise(expense)
+        payers = _expense_payers_paise(expense, members)
         total_paid = sum(payers.values())
 
         if total_paid <= 0:
@@ -266,9 +293,10 @@ def who_owes(group_data):
                 if portion_paise > 0:
                     owes[debtor][creditor] += portion_paise
 
+    members_by_name = _member_lookup(members)
     for settlement in group_data.get("settlements", []):
-        payer = settlement["from"]
-        receiver = settlement["to"]
+        payer = _resolve_member(settlement["from"], members_by_name)
+        receiver = _resolve_member(settlement["to"], members_by_name)
         amount_paise = to_paise(settlement["amount"])
 
         if amount_paise <= 0:
