@@ -26,6 +26,9 @@ On Windows, use `python` instead of `python3`.
 | `edit-expense <group> <expense_id> <description> <amount> <paid_by> [equal\|share]` | Updates an existing expense by its stable ID |
 | `delete-expense <group> <expense_id>` | Deletes an expense by its stable ID |
 | `settle <group> <payer> <receiver>` | Records that `payer` paid back what they owe `receiver` |
+| `category-summary <group>` | Breakdown of spending across categories (food, travel, stay, utilities, entertainment, general) |
+| `budget <group> [--set <amount> \| --clear]` | Track or manage spending against a group budget cap with threshold warnings |
+| `export <group> (--csv \| --markdown) [--output <file>]` | Export financial records to RFC CSV ledger or Markdown balance statement |
 
 ## How it's supposed to work
 
@@ -87,6 +90,9 @@ On Windows, use `python` instead of `python3`.
 ## Code
 
 - `split/calc.py`: splitting and working out debts
+- `split/analytics.py`: automatic expense classification and category breakdown
+- `split/budget.py`: group budget tracking and threshold alerts
+- `split/export.py`: CSV ledger and Markdown statement generation
 - `split/io.py`: reading and writing `data/groups.json`
 - `split/cli.py`: the commands
 - `tests/`: tests, run with `python3 -m unittest discover tests`

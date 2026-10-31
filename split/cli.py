@@ -15,6 +15,9 @@ from split.calc import (
 from split.io import load_group, save_group, load_all_groups, DEFAULT_DATA_PATH
 from split.validation import validate_file
 from split.migrations import execute_migration
+from split.analytics import analyze_categories, detect_category
+from split.budget import set_group_budget, clear_group_budget, evaluate_budget_status
+from split.export import export_ledger_csv, export_statement_markdown
 
 
 def cmd_summary(args):
@@ -512,6 +515,94 @@ def cmd_migrate_data(args):
             print(f"  • Group '{p['group_id']}': {src} -> {tgt}")
 
 
+def cmd_category_summary(args):
+    group = load_group(args.group)
+    if not group:
+        print(f"Error: Group '{args.group}' not found.")
+        sys.exit(1)
+
+    analytics = analyze_categories(group)
+    total_spent = analytics["total_spent_rupees"]
+    print(f"\nCategory Spending Breakdown for '{args.group}':")
+    print(f"Total Group Spend: ₹{total_spent:.2f}")
+    if analytics["top_category"]:
+        top_info = analytics["breakdown"][analytics["top_category"]]
+        print(f"Top Spending Category: {top_info['label']} (₹{top_info['total_rupees']:.2f})")
+    print("-" * 65)
+    print(f"{'Category':<26} {'Amount (INR)':<14} {'% Share':<10} {'Expenses':<10}")
+    print("-" * 65)
+
+    for cat_key, info in analytics["breakdown"].items():
+        if info["total_paise"] > 0:
+            print(
+                f"{info['label']:<26} ₹{info['total_rupees']:<13.2f} {info['percentage']:<9.1f}% {info['expense_count']:<10}"
+            )
+    print()
+
+
+def cmd_budget(args):
+    group = load_group(args.group)
+    if not group:
+        print(f"Error: Group '{args.group}' not found.")
+        sys.exit(1)
+
+    if args.clear:
+        clear_group_budget(group)
+        save_group(args.group, group)
+        print(f"Budget cleared for group '{args.group}'.")
+        return
+
+    if args.set is not None:
+        try:
+            budget_paise = set_group_budget(group, args.set)
+            save_group(args.group, group)
+            print(f"Budget for '{args.group}' set to ₹{budget_paise / 100.0:.2f}.")
+        except (ValueError, TypeError) as e:
+            print(f"Error: Invalid budget amount: {e}")
+            sys.exit(1)
+        return
+
+    # Inspect budget
+    analytics = analyze_categories(group)
+    status = evaluate_budget_status(group, analytics["total_spent_paise"])
+
+    print(f"\nBudget Status for Group '{args.group}':")
+    print("-" * 50)
+    if not status["has_budget"]:
+        print("  No budget configured.")
+        print(f"  Current spend: ₹{status['spent_rupees']:.2f}")
+        print("  Use 'split budget <group> --set <amount>' to set a limit.")
+    else:
+        print(f"  Budget Limit:     ₹{status['budget_rupees']:.2f}")
+        print(f"  Total Spent:      ₹{status['spent_rupees']:.2f}")
+        print(f"  Remaining:        ₹{status['remaining_rupees']:.2f}")
+        print(f"  Utilization:      {status['usage_percentage']:.1f}%")
+        print(f"\n  Status: {status['message']}")
+    print()
+
+
+def cmd_export(args):
+    group = load_group(args.group)
+    if not group:
+        print(f"Error: Group '{args.group}' not found.")
+        sys.exit(1)
+
+    fmt = (args.format or "markdown").lower()
+    if fmt == "csv":
+        content = export_ledger_csv(args.group, group)
+        default_name = f"{args.group}_ledger.csv"
+    else:
+        content = export_statement_markdown(args.group, group)
+        default_name = f"{args.group}_statement.md"
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"Exported {fmt.upper()} statement to '{args.output}'.")
+    else:
+        print(content)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Expense Split CLI")
     subparsers = parser.add_subparsers(dest="command", help="Available subcommands")
@@ -571,6 +662,26 @@ def main():
     p_plan = subparsers.add_parser("settle-plan", help="Show the smallest list of payments to clear everything")
     p_plan.add_argument("group", help="Group identifier")
     p_plan.set_defaults(func=cmd_settle_plan)
+
+    # category-summary
+    p_cat = subparsers.add_parser("category-summary", help="Show spending breakdown by category")
+    p_cat.add_argument("group", help="Group identifier")
+    p_cat.set_defaults(func=cmd_category_summary)
+
+    # budget
+    p_bud = subparsers.add_parser("budget", help="Manage or inspect group spending budget")
+    p_bud.add_argument("group", help="Group identifier")
+    b_group = p_bud.add_mutually_exclusive_group()
+    b_group.add_argument("--set", type=float, help="Set total budget amount in INR")
+    b_group.add_argument("--clear", action="store_true", help="Remove budget limit for group")
+    p_bud.set_defaults(func=cmd_budget)
+
+    # export
+    p_exp = subparsers.add_parser("export", help="Export group ledger and statements to CSV or Markdown")
+    p_exp.add_argument("group", help="Group identifier")
+    p_exp.add_argument("--format", choices=["markdown", "csv"], default="markdown", help="Export format (default: markdown)")
+    p_exp.add_argument("--output", help="Write export output directly to a file")
+    p_exp.set_defaults(func=cmd_export)
 
     args = parser.parse_args()
     if not args.command:
